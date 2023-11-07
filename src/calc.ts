@@ -28,18 +28,16 @@ const BP_GROWS_MATRIX_ARRAYS = [
 // 血魔攻防敏各有20點的基本值, 精神跟回復基本值為100點。
 const ABILITY_BASE = 20;
 
-export function calPetBPsByAblities(petAbility: PetAbility, bpRate: number = 1.2) {
+export function calPetBPsByAblities(petAbility: PetAbility, bpRate: number = 0.2) {
   // BP内增加寵物成長比率
-  const xyArrays = BP_GROWS_MATRIX_ARRAYS.map(arr => arr.map(grow => grow * bpRate));
-  
+  const xyArrays = BP_GROWS_MATRIX_ARRAYS.map(arr => arr.map(grow => grow * (1 + bpRate)));
   const zArrays = [
-    petAbility.hps,
-    petAbility.mps,
-    petAbility.atk,
-    petAbility.def,
-    petAbility.agi,
-  ].map((abs => abs - ABILITY_BASE));
-
+    petAbility.hps - ABILITY_BASE,
+    petAbility.mps - ABILITY_BASE,
+    petAbility.atk - ABILITY_BASE,
+    petAbility.def - ABILITY_BASE,
+    petAbility.agi - ABILITY_BASE,
+  ];
   const solution = lusolve(matrix(xyArrays), matrix(zArrays));
   console.log("解：", solution);
   return solution;
