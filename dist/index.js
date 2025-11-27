@@ -1,0 +1,15 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.GuessResultToString = exports.minmax = exports.calcDiff = exports.sumArray = exports.GrowRange = exports.Stat = exports.BP = exports.RealGuessRaw = exports.RealGuess = exports.petsData = void 0;
+var petsData_1 = require("./petsData");
+Object.defineProperty(exports, "petsData", { enumerable: true, get: function () { return petsData_1.petsData; } });
+var petStat_1 = require("./petStat");
+Object.defineProperty(exports, "RealGuess", { enumerable: true, get: function () { return petStat_1.RealGuess; } });
+Object.defineProperty(exports, "RealGuessRaw", { enumerable: true, get: function () { return petStat_1.RealGuessRaw; } });
+Object.defineProperty(exports, "BP", { enumerable: true, get: function () { return petStat_1.BP; } });
+Object.defineProperty(exports, "Stat", { enumerable: true, get: function () { return petStat_1.Stat; } });
+Object.defineProperty(exports, "GrowRange", { enumerable: true, get: function () { return petStat_1.GrowRange; } });
+Object.defineProperty(exports, "sumArray", { enumerable: true, get: function () { return petStat_1.sumArray; } });
+Object.defineProperty(exports, "calcDiff", { enumerable: true, get: function () { return petStat_1.calcDiff; } });
+Object.defineProperty(exports, "minmax", { enumerable: true, get: function () { return petStat_1.minmax; } });
+Object.defineProperty(exports, "GuessResultToString", { enumerable: true, get: function () { return petStat_1.GuessResultToString; } });
