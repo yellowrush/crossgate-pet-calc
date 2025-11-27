@@ -1,132 +1,666 @@
-import { PetStats, BP } from './models';
+import { lusolve } from 'mathjs';
 
-/**
- * PetStat - 表示一个宠物的已观测属性（等级 + 5维属性）
- *
- * 该类提供：
- * - 从 BP 构造 observed stats
- * - 将 observed stats 转换为估算的 BP
- * - 应用手动 BP 点数并刷新 observed stats
- * - 近似比较、序列化等工具方法
- */
-export class PetStat implements PetStats {
-  constructor(
-    public lvl: number,
-    public hp: number,
-    public mp: number,
-    public attack: number,
-    public defend: number,
-    public agi: number,
-    public name?: string
-  ) {}
+import {
+  sum,
+  calcDiff,
+  _loopForSum,
+  fullRates,
+  loopForSum,
+  minmax,
+  GuessResultToString,
+} from './utils';
 
-  /**
-   * 从一个普通对象构造 PetStat
-   */
-  static fromObject(obj: Partial<PetStats> & { name?: string }): PetStat {
-    return new PetStat(
-      obj.lvl ?? 1,
-      obj.hp ?? 0,
-      obj.mp ?? 0,
-      obj.attack ?? 0,
-      obj.defend ?? 0,
-      obj.agi ?? 0,
-      obj.name
-    );
+class Stat {
+  lvl: number;
+  hp: number;
+  mp: number;
+  attack: number;
+  defend: number;
+  agi: number;
+
+  constructor(lvl, hp, mp, attack, defend, agi) {
+    this.lvl = lvl;
+    this.hp = hp;
+    this.mp = mp;
+    this.attack = attack;
+    this.defend = defend;
+    this.agi = agi;
   }
 
-  /**
-   * 根据 BP 生成 PetStat（使用 BP.calcRealNum）
-   */
-  static fromBP(bp: BP, lvl: number = 1, name?: string): PetStat {
-    const s = bp.calcRealNum(lvl);
-    return new PetStat(lvl, s.hp, s.mp, s.attack, s.defend, s.agi, name);
+  guessGrow(growRange, rate) {
+    const hp = growRange.hpp,
+      atk = growRange.attackp,
+      def = growRange.defendp,
+      agi = growRange.agip,
+      mp = growRange.mpp;
+    const stat = new BP(
+      hp * rate,
+      atk * rate,
+      def * rate,
+      agi * rate,
+      mp * rate
+    ).calcRealNum();
+    // stat.print();
+    stat.lvl = this.lvl;
+    return stat;
   }
 
-  /**
-   * 将当前 observed stats 估算回 BP（反向近似运算）
-   * 注意：这是个简单线性近似：hp->hp/30, others->value/3
-   * 返回 BP 可能包含小数
-   */
-  toBP(): BP {
-    const hpBP = this.hp / 30;
-    const mpBP = this.mp / 3;
-    const atkBP = this.attack / 3;
-    const defBP = this.defend / 3;
-    const agiBP = this.agi / 3;
+  // 寵物所有能力由BP決定, 血魔攻防敏各有20點的基本值, 精神跟回復基本值為
+  // 100點,
+  //       生命 魔力 攻擊  防禦   敏捷   精神   回復
+  // +體力   8   1   0.2  0.2    0.1   -0.3   0.8
+  // +力量   2   2   2.7  0.3    0.2   -0.1  -0.1
+  // +強度   3   2   0.3  3      0.2    0.2  -0.1
+  // +速度   3   2   0.3  0.3    2     -0.1   0.2
+  // +魔法   1  10   0.2  0.2    0.1    0.8  -0.3
 
-    // BP 构造顺序：hp, attack, defend, agi, mp
-    return new BP(hpBP, atkBP, defBP, agiBP, mpBP);
+  toBP() {
+    const hp = this.hp,
+      mp = this.mp,
+      atk = this.attack,
+      defStat = this.defend,
+      agi = this.agi;
+
+    const martrix = [
+      [8, 2, 3, 3, 1],
+      [1, 2, 2, 2, 10],
+      [0.2, 2.7, 0.3, 0.3, 0.2],
+      [0.2, 0.3, 3, 0.3, 0.2],
+      [0.1, 0.2, 0.2, 2, 0.1],
+    ];
+
+    // 血魔攻防敏各有20點的基本值, 精神跟回復基本值 100點,
+    const base = 20;
+    const b = [hp - base, mp - base, atk - base, defStat - base, agi - base];
+
+    // 使用 numpy-equivalent 库求解线性方程组
+    const x = lusolve(martrix, b);
+
+    return new BP(x[0][0], x[1][0], x[2][0], x[3][0], x[4][0]);
   }
 
-  /**
-   * 应用手动分配的 BP 点数（数组顺序：[hp, attack, defend, agi, mp]），并刷新 observed stats
-   * 该方法会把这些点数加到当前估算的 BP 上，然后重新计算 observed stats（使用当前 lvl）
-   */
-  applyManualBPPoints(points: number[]): void {
-    const curBP = this.toBP();
-    const [hpAdd = 0, atkAdd = 0, defAdd = 0, agiAdd = 0, mpAdd = 0] = points;
-    const newBP = new BP(
-      curBP.hp + hpAdd,
-      curBP.attack + atkAdd,
-      curBP.defend + defAdd,
-      curBP.agi + agiAdd,
-      curBP.mp + mpAdd
-    );
-
-    const newStats = newBP.calcRealNum(this.lvl);
-    this.hp = newStats.hp;
-    this.mp = newStats.mp;
-    this.attack = newStats.attack;
-    this.defend = newStats.defend;
-    this.agi = newStats.agi;
-  }
-
-  /**
-   * 返回当前 BP 估算和 observed stats 的快照对象
-   */
-  toJSON() {
-    return {
-      name: this.name,
-      lvl: this.lvl,
-      hp: this.hp,
-      mp: this.mp,
-      attack: this.attack,
-      defend: this.defend,
-      agi: this.agi,
-      bp: this.toBP().toArray(),
-    };
-  }
-
-  /**
-   * 近似比较：使用相对误差阈值判断两个 PetStats 是否接近
-   * @param other 要比较的对象
-   * @param relTol 相对误差容差（默认1%）
-   */
-  approxEqual(other: PetStats, relTol = 0.01): boolean {
-    const rel = (a: number, b: number) =>
-      b === 0 ? Math.abs(a - b) : Math.abs((a - b) / b);
-    return (
-      rel(this.hp, other.hp) <= relTol &&
-      rel(this.mp, other.mp) <= relTol &&
-      rel(this.attack, other.attack) <= relTol &&
-      rel(this.defend, other.defend) <= relTol &&
-      rel(this.agi, other.agi) <= relTol
-    );
-  }
-
-  /**
-   * 复制一份 PetStat
-   */
-  clone(): PetStat {
-    return new PetStat(
-      this.lvl,
-      this.hp,
-      this.mp,
-      this.attack,
-      this.defend,
+  str() {
+    return [
+      'lvl:' + this.lvl + ',hp:',
+      this.hp + ',mp:',
+      this.mp + ',attack:',
+      this.attack + ',defend:',
+      this.defend + ',agi:',
       this.agi,
-      this.name
+    ].join('');
+  }
+
+  equal(stat) {
+    return this.same(stat);
+  }
+
+  toArray() {
+    return [this.hp, this.attack, this.defend, this.agi, this.mp];
+  }
+
+  same(stat, tolerance = 0) {
+    if (Math.abs(sum(this.toArray()) - sum(stat.toArray())) > tolerance) {
+      return false;
+    }
+
+    if (
+      calcDiff(this.toArray(), stat.toArray()).filter(
+        (n) => Math.abs(n) > tolerance
+      ).length
+    ) {
+      return false;
+    }
+
+    return true;
+
+    // return this.hp == stat.hp &&
+    //     this.mp == stat.mp &&
+    //     this.attack == stat.attack &&
+    //     this.defend == stat.defend &&
+    //     this.agi == stat.agi
+  }
+}
+
+class BP {
+  hpp: number;
+  mpp: number;
+  attackp: number;
+  defendp: number;
+  agip: number;
+
+  constructor(hp, attack, defend, agi, mp) {
+    this.hpp = hp;
+    this.mpp = mp;
+    this.attackp = attack;
+    this.defendp = defend;
+    this.agip = agi;
+  }
+
+  // 寵物所有能力由BP決定, 血魔攻防敏各有20點的基本值, 精神跟回復基本值為
+  // 100點,
+  //       生命 魔力 攻擊  防禦   敏捷   精神   回復
+  // +體力   8   1   0.2  0.2    0.1   -0.3   0.8
+  // +力量   2   2   2.7  0.3    0.2   -0.1  -0.1
+  // +強度   3   2   0.3  3      0.2    0.2  -0.1
+  // +速度   3   2   0.3  0.3    2     -0.1   0.2
+  // +魔法   1  10   0.2  0.2    0.1    0.8  -0.3
+  calcHP() {
+    const martrix = [8, 2, 3, 3, 1];
+    return (
+      this.hpp * martrix[0] +
+      this.attackp * martrix[1] +
+      +this.defendp * martrix[2] +
+      this.agip * martrix[3] +
+      this.mpp * martrix[4]
+    );
+  }
+
+  calcMP() {
+    const martrix = [1, 2, 2, 2, 10];
+    return (
+      this.hpp * martrix[0] +
+      this.attackp * martrix[1] +
+      +this.defendp * martrix[2] +
+      this.agip * martrix[3] +
+      this.mpp * martrix[4]
+    );
+  }
+
+  toArray() {
+    return [this.hpp, this.attackp, this.defendp, this.agip, this.mpp];
+  }
+
+  calcATK() {
+    const martrix = [0.2, 2.7, 0.3, 0.3, 0.2];
+    return (
+      this.hpp * martrix[0] +
+      this.attackp * martrix[1] +
+      +this.defendp * martrix[2] +
+      this.agip * martrix[3] +
+      this.mpp * martrix[4]
+    );
+  }
+
+  calcDEF() {
+    const martrix = [0.2, 0.3, 3, 0.3, 0.2];
+    return (
+      this.hpp * martrix[0] +
+      this.attackp * martrix[1] +
+      +this.defendp * martrix[2] +
+      this.agip * martrix[3] +
+      this.mpp * martrix[4]
+    );
+  }
+
+  calcAGI() {
+    const martrix = [0.1, 0.2, 0.2, 2, 0.1];
+    return (
+      this.hpp * martrix[0] +
+      this.attackp * martrix[1] +
+      +this.defendp * martrix[2] +
+      this.agip * martrix[3] +
+      this.mpp * martrix[4]
+    );
+  }
+
+  calcWIS() {
+    const martrix = [-0.3, -0.1, 0.2, -0.1, 0.8];
+    return (
+      this.hpp * martrix[0] +
+      this.attackp * martrix[1] +
+      +this.defendp * martrix[2] +
+      this.agip * martrix[3] +
+      this.mpp * martrix[4]
+    );
+  }
+
+  calcRes() {
+    const martrix = [0.8, -0.1, -0.1, 0.2, -0.3];
+    return (
+      this.hpp * martrix[0] +
+      this.attackp * martrix[1] +
+      +this.defendp * martrix[2] +
+      this.agip * martrix[3] +
+      this.mpp * martrix[4]
+    );
+  }
+
+  contains(anotherBP) {
+    return (
+      this.hpp <= anotherBP.hpp &&
+      this.mpp <= anotherBP.mpp &&
+      this.attackp <= anotherBP.attackp &&
+      this.defendp <= anotherBP.defendp &&
+      this.agip <= anotherBP.agip
+    );
+  }
+
+  sum() {
+    return this.hpp + this.mpp + this.attackp + this.defendp + this.agip;
+  }
+
+  calcRealNum() {
+    const propBase = 20;
+
+    const fixPos = (n) => {
+      return Math.floor(Math.round(n * 10000) / 10000);
+    };
+    // Only pass the expected 6 arguments to Stat constructor
+    const s = new Stat(
+      0,
+      fixPos(this.calcHP()) + propBase,
+      fixPos(this.calcMP()) + propBase,
+      fixPos(this.calcATK()) + propBase,
+      fixPos(this.calcDEF()) + propBase,
+      fixPos(this.calcAGI()) + propBase
+    );
+
+    return s;
+  }
+
+  str() {
+    return (
+      'hp:' +
+      this.hpp +
+      ',mp:' +
+      this.mpp +
+      ',attack:' +
+      this.attackp +
+      ',defend:' +
+      this.defendp +
+      ',agi:' +
+      this.agip
     );
   }
 }
+
+// 家寵
+// 總BP =  GrowSum*rate + 2 (隨機) + (n-1)*seed + (n-1)
+
+// 野寵
+// 總BP =
+
+class GrowRange {
+  hpp: number;
+  mpp: number;
+  attackp: number;
+  defendp: number;
+  agip: number;
+  bprate: number;
+
+  constructor(
+    hp: number,
+    attack: number,
+    defend: number,
+    agi: number,
+    mp: number,
+    bprate?: number
+  ) {
+    this.hpp = parseFloat(hp as any);
+    this.mpp = parseFloat(mp as any);
+    this.attackp = parseFloat(attack as any);
+    this.defendp = parseFloat(defend as any);
+    this.agip = parseFloat(agi as any);
+    if (bprate == null) {
+      this.bprate = 0.2;
+    } else {
+      this.bprate = bprate;
+    }
+  }
+
+  contains(anotherGrow) {
+    return (
+      this.hpp <= anotherGrow.hpp &&
+      this.mpp <= anotherGrow.mpp &&
+      this.attackp <= anotherGrow.attackp &&
+      this.defendp <= anotherGrow.defendp &&
+      this.agip <= anotherGrow.agip
+    );
+  }
+
+  drop(hpp, atkp, defp, agip, mpp) {
+    return new GrowRange(
+      this.hpp - Math.abs(hpp),
+      this.attackp - Math.abs(atkp),
+      this.defendp - Math.abs(defp),
+      this.agip - Math.abs(agip),
+      this.mpp - Math.abs(mpp),
+      this.bprate
+    );
+  }
+
+  same(agw) {
+    return (
+      this.hpp == agw.hpp &&
+      this.mpp == agw.mpp &&
+      this.attackp == agw.attackp &&
+      this.defendp == agw.defendp &&
+      this.agip == agw.agip
+    );
+  }
+
+  toArray() {
+    return [this.hpp, this.attackp, this.defendp, this.agip, this.mpp];
+  }
+
+  sum() {
+    return this.hpp + this.mpp + this.attackp + this.defendp + this.agip;
+  }
+
+  calcBPAtLevel(lvl, lvlpoint) {
+    const bps = [
+      this.hpp * this.bprate,
+      this.attackp * this.bprate,
+      this.defendp * this.bprate,
+      this.agip * this.bprate,
+      this.mpp * this.bprate,
+    ];
+
+    const lvldiff = lvl - 1;
+
+    const shift = 0;
+    bps[0] = bps[0] + fullRates[this.hpp - shift] * lvldiff;
+    bps[1] = bps[1] + fullRates[this.attackp - shift] * lvldiff;
+    bps[2] = bps[2] + fullRates[this.defendp - shift] * lvldiff;
+    bps[3] = bps[3] + fullRates[this.agip - shift] * lvldiff;
+    bps[4] = bps[4] + fullRates[this.mpp - shift] * lvldiff;
+
+    if (lvlpoint == null) {
+      lvlpoint = lvldiff;
+    }
+
+    // Explicitly pass array elements to BP constructor
+    return {
+      baseBP: new BP(bps[0], bps[1], bps[2], bps[3], bps[4]),
+      sumBaseBP: sum(bps) + 10 * this.bprate,
+      sumFullBP: sum(bps) + 10 * this.bprate + lvlpoint,
+    };
+  }
+
+  mockLoopRange(grow, cb) {
+    cb(sum(this.bps()), grow);
+  }
+
+  loopRange(cb) {
+    const sumBP = sum(this.bps());
+    const v1 = [this.hpp - 4, this.hpp + 11];
+    const v2 = [this.attackp - 4, this.attackp + 11];
+    const v3 = [this.defendp - 4, this.defendp + 11];
+    const v4 = [this.agip - 4, this.agip + 11];
+    const v5 = [this.mpp - 4, this.mpp + 11];
+
+    for (var a = v1[0]; a <= v1[1]; a++) {
+      for (var b = v2[0]; b <= v2[1]; b++) {
+        for (var c = v3[0]; c <= v3[1]; c++) {
+          for (var d = v4[0]; d <= v4[1]; d++) {
+            for (var e = v5[0]; e <= v5[1]; e++) {
+              cb(sumBP, new GrowRange(a, b, c, d, e, this.bprate));
+            }
+          }
+        }
+      }
+    }
+  }
+
+  bps() {
+    return [this.hpp, this.attackp, this.defendp, this.agip, this.mpp];
+  }
+
+  guesslv1(stat, bprate) {
+    const result = [];
+    this.loopRange((sumBP, growRange) => {
+      const guess = stat.guessGrow(growRange, bprate);
+      if (guess.equal(stat)) {
+        result.push({
+          SumGrowBPs: sumBP,
+          MaxGrowBPs: this.bps(),
+          GuessRange: growRange,
+          LostBP: growRange.sum() - 10 - sumBP,
+          PossibleLost: possibleLostRange(growRange, this.bps()),
+          ManualPoints: [0, 0, 0, 0, 0],
+          RandomRange: null,
+          guess,
+        });
+      }
+    });
+    return result;
+  }
+
+  guess(stat, notorderpoint = 0, targetGrow = null) {
+    let res = this.guessWithSpecficLvlPoint(
+      stat,
+      stat.lvl - 1 - notorderpoint,
+      targetGrow
+    );
+
+    // if (stat.lvl == 1) {
+    //     return this.guesslv1(stat, bprate);
+    // }
+
+    if (res.length == 0 && stat.lvl != 1) {
+      res = this.guessWithSpecficLvlPoint(stat, 0, targetGrow);
+    }
+
+    return res;
+  }
+
+  guessWithSpecficLvlPoint(stat, point, targetGrow) {
+    const result = [];
+
+    const calcBP = stat.toBP();
+
+    const statUp = new Stat(
+      stat.lvl,
+      stat.hp + 1,
+      stat.mp + 1,
+      stat.attack + 1,
+      stat.defend + 1,
+      stat.agi + 1
+    );
+    const calcUpBp = statUp.toBP();
+
+    const oSum = calcBP.sum();
+    const oUpSum = calcUpBp.sum();
+
+    const results = [];
+
+    if (targetGrow) {
+      // Fix: Use apply to avoid spread error
+      this.mockLoopRange(
+        this.drop.apply(this, targetGrow.toArray()),
+        (sumBP, growRange) => {
+          return this._handleGuessingGrowRange(
+            growRange,
+            stat,
+            point,
+            oSum,
+            oUpSum,
+            calcUpBp,
+            results,
+            result,
+            sumBP
+          );
+        }
+      );
+      return result;
+    }
+    // this.mockLoopRange(this.drop(2, 1, 0, 1, 0), (sumBP, growRange) => {
+    this.loopRange((sumBP, growRange) => {
+      return this._handleGuessingGrowRange(
+        growRange,
+        stat,
+        point,
+        oSum,
+        oUpSum,
+        calcUpBp,
+        results,
+        result,
+        sumBP
+      );
+    });
+
+    return result;
+  }
+
+  _handleGuessingGrowRange(
+    growRange,
+    stat,
+    point,
+    oSum,
+    oUpSum,
+    calcUpBp,
+    results,
+    result,
+    sumBP
+  ) {
+    if (!growRange.contains(this)) {
+      return false;
+    }
+    const res = growRange.calcBPAtLevel(stat.lvl, point);
+
+    if (res.sumFullBP >= oSum && res.sumFullBP <= oUpSum) {
+      const softLimit = calcDiff(res.baseBP.toArray(), calcUpBp.toArray()).map(
+        (n) => n + 1
+      );
+      loopForSum(point, 5, softLimit, (a, b, c, d, e) => {
+        loopForSum(10, 5, [10, 10, 10, 10, 10], (a1, b1, c1, d1, e1) => {
+          const bps = res.baseBP.toArray();
+          const bp = new BP(
+            bps[0] + a + growRange.bprate * a1,
+            bps[1] + b + growRange.bprate * b1,
+            bps[2] + c + growRange.bprate * c1,
+            bps[3] + d + growRange.bprate * d1,
+            bps[4] + e + growRange.bprate * e1
+          );
+
+          const calcState = bp.calcRealNum();
+          if (calcState.same(stat, 0)) {
+            results.push({ growRange });
+            result.push({
+              SumGrowBPs: sumBP,
+              MaxGrowBPs: this.bps(),
+              GuessRange: growRange,
+              LostBP: growRange.sum() - sumBP,
+              PossibleLost: possibleLostRange(growRange, this.bps()),
+              guess: calcState,
+              ManualPoints: [a, b, c, d, e],
+              RandomRange: [a1, b1, c1, d1, e1],
+            });
+          }
+        });
+      });
+    }
+  }
+}
+
+function possibleLostRange(growRange, maxBP) {
+  const maxBasePos = 10;
+
+  const sureLost = [];
+  const guessRange = growRange.toArray();
+  for (var i = 0; i < guessRange.length; ++i) {
+    if (guessRange[i] < maxBP[i]) {
+      sureLost[i] = maxBP[i] - guessRange[i];
+    } else {
+      sureLost[i] = 0;
+    }
+  }
+  const sumSureLost = sum(sureLost);
+
+  const sureBaseOver = [];
+  for (var i = 0; i < guessRange.length; ++i) {
+    if (guessRange[i] > maxBP[i]) {
+      sureBaseOver[i] = guessRange[i] - maxBP[i];
+    } else {
+      sureBaseOver[i] = 0;
+    }
+  }
+  let sumSureBase = sum(sureBaseOver);
+
+  const possibleLostRange = [];
+  for (var i = 0; i < guessRange.length; ++i) {
+    const min = maxBP[i] - 5;
+    let max = maxBP[i];
+    const thisoverBase = guessRange[i] - maxBP[i];
+    const otherOverbase = sumSureBase - thisoverBase;
+    let localMax = maxBasePos - otherOverbase;
+    possibleLostRange[i] = [
+      Math.max(0, max - guessRange[i]),
+      Math.min(4, max + localMax - guessRange[i]),
+    ];
+  }
+
+  // console.log("穩掉", sumSureLost, "分布", sureLost);
+  // console.log("基本檔穩超過", sumSureBase, "分布", sureBaseOver);
+  // console.log("可能掉檔分布", possibleLostRange.map(n => n[0] + "~" + n[1]));
+
+  return {
+    sumSureLost,
+    sureLost,
+    possibleLostRange: possibleLostRange.map((n) => n[0] + '~' + n[1]),
+  };
+}
+
+function RealGuessRaw(Pts, input) {
+  const token = input.trim().split(/ /);
+  const [name, lvl, hp, mp, attack, def, agi, notorderpoint, targetGrow] =
+    token;
+  return RealGuess(
+    Pts,
+    name,
+    lvl !== undefined ? parseInt(lvl) : undefined,
+    hp !== undefined ? parseInt(hp) : undefined,
+    mp !== undefined ? parseInt(mp) : undefined,
+    attack !== undefined ? parseInt(attack) : undefined,
+    def !== undefined ? parseInt(def) : undefined,
+    agi !== undefined ? parseInt(agi) : undefined,
+    notorderpoint !== undefined ? parseInt(notorderpoint) : undefined,
+    targetGrow !== undefined ? targetGrow : undefined
+  );
+}
+
+function RealGuess(
+  Pts,
+  name,
+  lvl,
+  hp,
+  mp,
+  attack,
+  def,
+  agi,
+  notorderpoint,
+  targetGrow
+) {
+  const pet = Pts.filter((n) => n[1] == name)[0];
+  if (pet == null) {
+    return { pet: { name: name, find: false, lvl: lvl } };
+  }
+
+  const bps = [pet[3], pet[4], pet[5], pet[6], pet[7]];
+  try {
+    const bprate = pet[8] == null ? 0.2 : parseFloat(pet[8]);
+    // Explicitly pass array elements to GrowRange constructor
+    const rng = new GrowRange(bps[0], bps[1], bps[2], bps[3], bps[4], bprate);
+
+    const stat = new Stat(lvl, hp, mp, attack, def, agi);
+    const results = rng.guess(stat, notorderpoint, targetGrow);
+
+    return { pet: { name: pet[1], find: true, lvl: lvl }, bps, results };
+  } catch (err) {
+    console.log(err);
+    throw err;
+  }
+}
+
+const sumArray = sum;
+export {
+  RealGuess,
+  RealGuessRaw,
+  BP,
+  Stat,
+  GrowRange,
+  sumArray,
+  calcDiff,
+  minmax,
+  GuessResultToString,
+};
